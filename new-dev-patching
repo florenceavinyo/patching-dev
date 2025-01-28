@@ -1,0 +1,106 @@
+---
+- name: 
+  Manage RHEL server with AWS
+  hosts: rhel_servers
+  become: yes
+  vars:
+    instance_id: "i-034c74934fe947372"
+    volume_id: "vol-07d68fbcdf2b0c501"
+    volume_id_1: "vol-02d690ac6a18053cc"
+    volume_id_2: "vol-0e6b201cf060602b3"
+    # temp_instance_id: "i-0a03c76aacc564b48"
+    eip: "3.30.193.96"
+    region: "us-west-1"
+    rhel_servers: "172.32.2.100.us-gov-west-1.compute.internal"
+
+  tasks:
+    - name: Take a snapshot of the volume
+      ec2_snapshot:
+        region: "{{ region }}"
+        volume_id: "{{ volume_id }}"
+        description: "dev_grants_oldcc_mil_MAINT_1_20250123"
+        volume_id_1: "{{ volume_id_1 }}"
+        description: "dev_grants_oldcc_mil_MAINT_2_20250123"
+        volume_id_2: "{{ volume_id_2 }}"
+        description: "dev_grants_oldcc_mil_MAINT_3_20250123"
+      register: snapshot
+
+    - name: Wait for snapshot to complete
+      ec2_snapshot_facts:
+        region: "{{ region }}"
+        snapshot_ids: "{{ snapshot.snapshot_id }}"
+      register: snapshot_info
+      until: snapshot_info.snapshots[0].state == 'completed'
+      retries: 10
+      delay: 30
+
+    - name: Associate Elastic IP
+      ec2_eip:
+        region: "{{ region }}"
+        ip: "{{ eip }}"
+        state: present
+        instance_id: "{{ instance_id }}"
+        state: present
+      register: associate_result
+
+    - name: Ensure Elastic IP is associated
+      wait_for:
+        timeout: 60
+        state: present
+        interval: 5
+        ip: "{{ eip }}"
+        region: "{{ region }}"
+      when: associate_result.changed 
+
+    - name: Update all packages to the latest version
+      yum:
+        name: '*'
+        state: latest
+
+    - name: Reboot the system if needed
+      reboot:
+        reboot_timeout: 600
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Stop the current instance
+      ec2:
+        instance_ids: "{{ instance_id }}"
+        state: stopped
+        region: "{{ region }}"
+      register: stop_result
+
+    - name: Wait for the instance is stopped
+      ec2:
+        instance-ids: "{{ instance-id }}"
+        state: stopped
+        region: "{{ region }}"
+      register: instance_info
+      until: instance_info.instances[0].state == 'stopped'
+      retries: 10
+      delay: 30          
+        
+    - name: Disassociate Elastic IP with the new instance
+      ec2_eip:
+        region: "{{ region }}"
+        ip: "{{ eip }}"
+        state: absent
+        instance_id: "{{ instance_id }}"
+      register: disassociate_result
+      
+    - name: Start the instance
+      ec2:
+        instance_id: "{{ instance_id }}"
+        state: running
+        region: "{{ region }}"
+      register: start_result
+
+    - name: Ensure current instance is running
+      ec2:
+        instance-ids: "{{ current_instance-id }}"
+        state: running
+        region: "{{ region }}"
+        wait: yes
+      register: instance_info
+      until: instance_info.instances[0].state == 'running'
+      retries: 10
+      delay: 30          
